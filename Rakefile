@@ -29,5 +29,4 @@ namespace :debug do
   end
 end
 
-task :test => :compile
-task :default => :test
+task :default => :compile
