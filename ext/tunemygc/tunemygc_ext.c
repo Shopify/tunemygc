@@ -60,7 +60,7 @@ static void tunemygc_invoke_gc_snapshot(void *data)
     }
 }
 
-static void free_current_cycle()
+static void free_whole_cycle()
 {
     tunemygc_stat_record* stat = cycle_head;
     while (stat != NULL) {
@@ -114,7 +114,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
             if (cycle_head != NULL) {
                 fprintf(stderr, "[TuneMyGc.ext] Reentrant GC Cycle?! Disabling!");
                 disabled = true;
-                free_current_cycle();
+                free_whole_cycle();
                 return;
             }
             break;
@@ -137,7 +137,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
         if (!rb_postponed_job_register(0, tunemygc_invoke_gc_snapshot, (void *)cycle_head)) {
             fprintf(stderr, "[TuneMyGc.ext] Failed enqueing rb_postponed_job_register, disabling!\n");
             disabled = true;
-            free_current_cycle();
+            free_whole_cycle();
         }
         cycle_current = cycle_head = NULL;
     }
