@@ -1,6 +1,7 @@
+#include <stdbool.h>
 #include "tunemygc_ext.h"
 
-static char disabled = 0;
+static bool disabled = false;
 static tunemygc_stat_record* current_cycle = NULL;
 
 VALUE rb_mTunemygc;
@@ -80,14 +81,14 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
     if (disabled) {
         return;
     }
-    char publish = 0;
+    bool publish = false;
     rb_trace_arg_t *tparg = rb_tracearg_from_tracepoint(tpval);
     rb_event_flag_t flag = rb_tracearg_event_flag(tparg);
 
     tunemygc_stat_record *stat = ((tunemygc_stat_record*)malloc(sizeof(tunemygc_stat_record)));
     if(stat == NULL) {
         fprintf(stderr, "[TuneMyGc.ext] malloc'ing tunemygc_stat_record failed, disabling!\n");
-        disabled = 1;
+        disabled = true;
         return;
     }
     if (rb_thread_current() == rb_thread_main()) {
@@ -114,7 +115,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
             stat->stage = sym_gc_cycle_entered;
             if (current_cycle != NULL) {
                 fprintf(stderr, "[TuneMyGc.ext] Reentrant GC Cycle?! Disabling!");
-                disabled = 1;
+                disabled = true;
                 while(stat != NULL) {
                     tunemygc_stat_record *next = (tunemygc_stat_record *)stat->next;
                     free(stat);
@@ -125,7 +126,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
             break;
         case RUBY_INTERNAL_EVENT_GC_EXIT:
             stat->stage = sym_gc_cycle_exited;
-            publish = 1;
+            publish = true;
             break;
 #endif
     }
@@ -134,10 +135,10 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
     stat->next = current_cycle;
     current_cycle = stat;
 
-    if (publish == 1) {
+    if (publish) {
         if (!rb_postponed_job_register(0, tunemygc_invoke_gc_snapshot, (void *)stat)) {
             fprintf(stderr, "[TuneMyGc.ext] Failed enqueing rb_postponed_job_register, disabling!\n");
-            disabled = 1;
+            disabled = true;
             while(stat != NULL) {
                 tunemygc_stat_record *next = (tunemygc_stat_record *)stat->next;
                 free(stat);
