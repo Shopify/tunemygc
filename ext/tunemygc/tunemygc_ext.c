@@ -2,7 +2,8 @@
 #include "tunemygc_ext.h"
 
 static bool disabled = false;
-static tunemygc_stat_record* current_cycle = NULL;
+static tunemygc_stat_record* cycle_head = NULL;
+static tunemygc_stat_record* cycle_current = NULL;
 
 VALUE rb_mTunemygc;
 static ID id_tunemygc_tracepoint;
@@ -44,26 +45,12 @@ static VALUE tunemygc_walltime(VALUE mod)
     return DBL2NUM(_tunemygc_walltime());
 }
 
-static void reverse(tunemygc_stat_record** head_ref) {
-    tunemygc_stat_record* prev   = NULL;
-    tunemygc_stat_record* current = *head_ref;
-    tunemygc_stat_record* next;
-    while (current != NULL) {
-        next  = current->next;  
-        current->next = prev;   
-        prev = current;
-        current = next;
-    }
-    *head_ref = prev;
-}
-
 /* Postponed job callback that fires when the VM is in a consistent state again (sometime
  * after the GC cycle, notably RUBY_INTERNAL_EVENT_GC_END_SWEEP)
  */
 static void tunemygc_invoke_gc_snapshot(void *data)
 {
     tunemygc_stat_record *stat = (tunemygc_stat_record *)data;
-    reverse(&stat);
     while(stat != NULL) {
         VALUE snapshot = tunemygc_get_stat_record(stat);
         rb_funcall(rb_mTunemygc, id_tunemygc_raw_snapshot, 1, snapshot);
@@ -113,7 +100,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
 #ifdef RUBY_INTERNAL_EVENT_GC_ENTER
         case RUBY_INTERNAL_EVENT_GC_ENTER:
             stat->stage = sym_gc_cycle_entered;
-            if (current_cycle != NULL) {
+            if (cycle_head != NULL) {
                 fprintf(stderr, "[TuneMyGc.ext] Reentrant GC Cycle?! Disabling!");
                 disabled = true;
                 while(stat != NULL) {
@@ -132,11 +119,15 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
     }
 
     tunemygc_set_stat_record(stat);
-    stat->next = current_cycle;
-    current_cycle = stat;
+    if (!cycle_head) {
+        cycle_current = cycle_head = stat;
+    } else {
+        cycle_current->next = stat;
+        cycle_current = stat;
+    }
 
     if (publish) {
-        if (!rb_postponed_job_register(0, tunemygc_invoke_gc_snapshot, (void *)stat)) {
+        if (!rb_postponed_job_register(0, tunemygc_invoke_gc_snapshot, (void *)cycle_head)) {
             fprintf(stderr, "[TuneMyGc.ext] Failed enqueing rb_postponed_job_register, disabling!\n");
             disabled = true;
             while(stat != NULL) {
@@ -145,7 +136,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
                 stat = next;
             }
         }
-        current_cycle = NULL;
+        cycle_current = cycle_head = NULL;
     }
 }
 
