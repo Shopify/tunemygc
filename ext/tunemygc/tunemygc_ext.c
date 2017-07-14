@@ -51,13 +51,24 @@ static VALUE tunemygc_walltime(VALUE mod)
 static void tunemygc_invoke_gc_snapshot(void *data)
 {
     tunemygc_stat_record *stat = (tunemygc_stat_record *)data;
-    while(stat != NULL) {
+    while (stat != NULL) {
         VALUE snapshot = tunemygc_get_stat_record(stat);
         rb_funcall(rb_mTunemygc, id_tunemygc_raw_snapshot, 1, snapshot);
         tunemygc_stat_record *next = (tunemygc_stat_record *)stat->next;
         free(stat);
         stat = next;
     }
+}
+
+static void free_current_cycle()
+{
+    tunemygc_stat_record* stat = cycle_head;
+    while (stat != NULL) {
+        tunemygc_stat_record *next = (tunemygc_stat_record *)stat->next;
+        free(stat);
+        stat = next;
+    }
+    cycle_current = cycle_head = NULL;
 }
 
 /* GC tracepoint hook. Snapshots GC state using new low level helpers which are safe
@@ -103,11 +114,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
             if (cycle_head != NULL) {
                 fprintf(stderr, "[TuneMyGc.ext] Reentrant GC Cycle?! Disabling!");
                 disabled = true;
-                while(stat != NULL) {
-                    tunemygc_stat_record *next = (tunemygc_stat_record *)stat->next;
-                    free(stat);
-                    stat = next;
-                }
+                free_current_cycle();
                 return;
             }
             break;
@@ -130,11 +137,7 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
         if (!rb_postponed_job_register(0, tunemygc_invoke_gc_snapshot, (void *)cycle_head)) {
             fprintf(stderr, "[TuneMyGc.ext] Failed enqueing rb_postponed_job_register, disabling!\n");
             disabled = true;
-            while(stat != NULL) {
-                tunemygc_stat_record *next = (tunemygc_stat_record *)stat->next;
-                free(stat);
-                stat = next;
-            }
+            free_current_cycle();
         }
         cycle_current = cycle_head = NULL;
     }
