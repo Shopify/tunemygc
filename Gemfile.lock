@@ -8,7 +8,7 @@ GIT
 PATH
   remote: .
   specs:
-    tunemygc (1.0.69)
+    tunemygc (1.0.69.pre.shopify)
 
 GEM
   remote: https://rubygems.org/
@@ -138,4 +138,4 @@ DEPENDENCIES
   webmock (~> 1.2, >= 1.2.0)
 
 BUNDLED WITH
-   1.13.6
+   1.15.1
