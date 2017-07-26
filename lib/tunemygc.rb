@@ -34,6 +34,4 @@ if TuneMyGc.enabled?
     require 'tunemygc/agent'
     TuneMyGc.booted
   end
-else
-  STDERR.puts "[tunemygc] not enabled" unless TuneMyGc.run_silently?
 end
