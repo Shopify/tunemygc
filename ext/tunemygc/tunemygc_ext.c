@@ -2,6 +2,7 @@
 #include "tunemygc_ext.h"
 
 static bool disabled = false;
+static bool ignore_callback = false;
 static tunemygc_stat_record* cycle_head = NULL;
 static tunemygc_stat_record* cycle_current = NULL;
 
@@ -20,6 +21,26 @@ static VALUE sym_gc_cycle_exited;
 #endif
 
 /* From @tmm1/gctools */
+static double _tunemygc_realtime()
+{
+  struct timespec ts;
+#ifdef HAVE_CLOCK_GETTIME
+  if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
+    rb_sys_fail("clock_gettime");
+  }
+#else
+  {
+    struct timeval tv;
+    if (gettimeofday(&tv, 0) < 0) {
+      rb_sys_fail("gettimeofday");
+    }
+    ts.tv_sec = tv.tv_sec;
+    ts.tv_nsec = tv.tv_usec * 1000;
+  }
+#endif
+  return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
 static double _tunemygc_walltime()
 {
   struct timespec ts;
@@ -39,6 +60,33 @@ static double _tunemygc_walltime()
 #endif
   return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
+
+#ifdef RUBY_INTERNAL_EVENT_GC_ENTER
+static struct {
+    double last_start;
+    unsigned long gc_count;
+    double gc_time;
+    double last_reset;
+} counters;
+
+static void reset_counters() {
+    counters.last_reset = _tunemygc_realtime();
+    counters.gc_time = 0;
+    counters.gc_count = 0;
+}
+
+static VALUE tunemygc_counters(VALUE mod)
+{
+    VALUE rb_counters = rb_ary_new2(3);
+    rb_ary_store(rb_counters, 0, ULONG2NUM((unsigned long) (counters.gc_time * 1000)));
+    rb_ary_store(rb_counters, 1, DBL2NUM(counters.last_reset));
+    rb_ary_store(rb_counters, 2, ULONG2NUM(counters.gc_count));
+
+    reset_counters();
+
+    return rb_counters;
+}
+#endif
 
 static VALUE tunemygc_walltime(VALUE mod)
 {
@@ -71,14 +119,32 @@ static void free_whole_cycle()
     cycle_current = cycle_head = NULL;
 }
 
+static void light_hook(VALUE tpval, void *data)
+{
+#ifdef RUBY_INTERNAL_EVENT_GC_ENTER
+    rb_trace_arg_t *tparg = rb_tracearg_from_tracepoint(tpval);
+    switch (rb_tracearg_event_flag(tparg)) {
+        case RUBY_INTERNAL_EVENT_GC_ENTER:
+            counters.last_start = _tunemygc_walltime();
+            break;
+        case RUBY_INTERNAL_EVENT_GC_EXIT:
+            if (counters.last_start) {
+                counters.gc_time += _tunemygc_walltime() - counters.last_start;
+            } else {
+                fprintf(stderr, "[TuneMyGc.ext] WTF?!\n");
+            }
+            counters.last_start = 0;
+            counters.gc_count++;
+            break;
+    }
+#endif
+}
+
 /* GC tracepoint hook. Snapshots GC state using new low level helpers which are safe
  * to call from within tracepoint handlers as they don't allocate and change the heap state
  */
-static void tunemygc_gc_hook_i(VALUE tpval, void *data)
+static void fullmode_hook(VALUE tpval, void *data)
 {
-    if (disabled) {
-        return;
-    }
     bool publish = false;
     rb_trace_arg_t *tparg = rb_tracearg_from_tracepoint(tpval);
     rb_event_flag_t flag = rb_tracearg_event_flag(tparg);
@@ -143,11 +209,34 @@ static void tunemygc_gc_hook_i(VALUE tpval, void *data)
     }
 }
 
+static void tunemygc_gc_hook_i(VALUE tpval, void *data)
+{
+    if (disabled) {
+        return;
+    }
+    if (ignore_callback) {
+        light_hook(tpval, data);
+    } else {
+        fullmode_hook(tpval, data);
+    }
+}
+
 /* Installs the GC tracepoint and declare interest only in start of the cycle and end of sweep
  * events
  */
-static VALUE tunemygc_install_gc_tracepoint(VALUE mod)
+static VALUE tunemygc_install_gc_tracepoint(VALUE mod, VALUE arg)
 {
+
+#ifdef RUBY_INTERNAL_EVENT_GC_ENTER
+    if (!RB_TYPE_P(arg, T_TRUE) && !RB_TYPE_P(arg, T_FALSE)) {
+	    rb_raise(rb_eTypeError, "Expected 'true' or 'false' as argument");
+	}
+    ignore_callback = RB_TYPE_P(arg, T_TRUE);
+    if (ignore_callback) {
+        reset_counters();
+    }
+#endif
+
     rb_event_flag_t events;
     VALUE tunemygc_tracepoint = rb_ivar_get(rb_mTunemygc, id_tunemygc_tracepoint);
     if (!NIL_P(tunemygc_tracepoint)) {
@@ -210,9 +299,12 @@ void Init_tunemygc_ext()
     rb_mTunemygc = rb_define_module("TuneMyGc");
     rb_ivar_set(rb_mTunemygc, id_tunemygc_tracepoint, Qnil);
 
-    rb_define_module_function(rb_mTunemygc, "install_gc_tracepoint", tunemygc_install_gc_tracepoint, 0);
+    rb_define_module_function(rb_mTunemygc, "install_gc_tracepoint", tunemygc_install_gc_tracepoint, 1);
     rb_define_module_function(rb_mTunemygc, "uninstall_gc_tracepoint", tunemygc_uninstall_gc_tracepoint, 0);
 
+#ifdef RUBY_INTERNAL_EVENT_GC_ENTER
+    rb_define_module_function(rb_mTunemygc, "gc_counters", tunemygc_counters, 0);
+#endif
     rb_define_module_function(rb_mTunemygc, "walltime", tunemygc_walltime, 0);
     rb_define_module_function(rb_mTunemygc, "peak_rss", tunemygc_peak_rss, 0);
     rb_define_module_function(rb_mTunemygc, "current_rss", tunemygc_current_rss, 0);
